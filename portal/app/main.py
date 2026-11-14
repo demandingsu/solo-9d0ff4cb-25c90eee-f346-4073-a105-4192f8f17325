@@ -139,8 +139,50 @@ def seed_reports(body: SeedBody):
     return {"inserted": body.count}
 
 
+class SeedReportItem(BaseModel):
+    sample_no: str
+    report_time: str
+    result: str
+
+
+class SeedReportsBody(BaseModel):
+    reports: list[SeedReportItem] = Field(min_length=1)
+
+
+@app.post("/admin/seed-reports", status_code=201)
+def seed_explicit_reports(body: SeedReportsBody):
+    """按显式样品号/报告时间/结论造数，用于构造跨日期、跨结论的共享样品。
+
+    报告编号沿用全局序列自动生成；同一样品可在不同日期或不同结论下
+    拥有多份报告。
+    """
+    rows = []
+    parsed = []
+    for item in body.reports:
+        try:
+            ts = parse_ts(item.report_time)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"时间参数错误: {exc}") from exc
+        if item.result not in ("合格", "不合格"):
+            raise HTTPException(status_code=400, detail="result 只能是 合格 或 不合格")
+        if not item.sample_no.strip():
+            raise HTTPException(status_code=400, detail="sample_no 不能为空")
+        parsed.append((item.sample_no.strip(), ts, item.result))
+    with db.connect() as conn:
+        seq = int(db.get_meta(conn, "seq"))
+        for sample_no, ts, result in parsed:
+            seq += 1
+            rows.append((f"RPT-{seq:06d}", sample_no, ts, result))
+        conn.executemany(
+            "INSERT INTO reports(report_no, sample_no, report_time, result) VALUES(?,?,?,?)",
+            rows,
+        )
+        db.set_meta(conn, "seq", str(seq))
+    return {"inserted": len(rows)}
+
+
 class SwitchBatchBody(BaseModel):
-    after_queries: int = Field(default=0, ge=0)  # >0：再响应 N 次查询后自动换批
+    after_queries: int = Field(default=0, ge=0)  # >0：再响应 N 次查询后自动换批:
 
 
 @app.post("/admin/switch-batch")
